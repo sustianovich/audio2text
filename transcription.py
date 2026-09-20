@@ -205,6 +205,27 @@ def load_model(name):
     return WhisperModel(name, device="cpu", compute_type="int8", download_root=str(MODEL_DIR))
 
 
+# Decoding options that keep an early mistake from spreading through a long recording.
+NO_SPEECH_THRESHOLD = 0.6  # Segment is silence if no-speech is likelier than this ...
+LOG_PROB_THRESHOLD = -1.0  # ... and the decoder was also this unsure of its text.
+COMPRESSION_RATIO_THRESHOLD = 2.4  # Repetitive text compresses better; retry above this.
+TEMPERATURES = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)  # Fallbacks used when a window fails the checks.
+HALLUCINATION_SILENCE = 2.0  # Skip silences this long inside a hallucinated window (words only).
+VAD_PARAMETERS = {
+    "threshold": 0.5,
+    "min_silence_duration_ms": 500,  # Do not cut a sentence at a short breath.
+    "speech_pad_ms": 300,  # Keep the soft start and end of words.
+}
+
+
+def is_silence(segment) -> bool:
+    """Whisper's own rule: probably no speech AND low confidence in what it wrote."""
+    return (
+        getattr(segment, "no_speech_prob", 0.0) > NO_SPEECH_THRESHOLD
+        and getattr(segment, "avg_logprob", 0.0) < LOG_PROB_THRESHOLD
+    )
+
+
 def transcribe(
     model,
     source,
@@ -212,19 +233,33 @@ def transcribe(
     on_progress=lambda value: None,
     word_timestamps=False,
     on_language=lambda language: None,
+    initial_prompt=None,
 ):
+    options = {
+        "language": language,
+        "task": "transcribe",
+        "beam_size": 5,
+        "vad_filter": True,
+        "vad_parameters": VAD_PARAMETERS,
+        "word_timestamps": word_timestamps,
+        # Each window is decoded on its own, so a loop or hallucination cannot carry over.
+        "condition_on_previous_text": False,
+        "no_speech_threshold": NO_SPEECH_THRESHOLD,
+        "log_prob_threshold": LOG_PROB_THRESHOLD,
+        "compression_ratio_threshold": COMPRESSION_RATIO_THRESHOLD,
+        "temperature": TEMPERATURES,
+        # Vocabulary, names and acronyms to spell as given; empty means none.
+        "initial_prompt": (initial_prompt or "").strip() or None,
+    }
+    if word_timestamps:
+        options["hallucination_silence_threshold"] = HALLUCINATION_SILENCE
     segments, info = model.transcribe(
-        str(source) if isinstance(source, (str, Path)) else source,
-        language=language,
-        task="transcribe",
-        beam_size=5,
-        vad_filter=True,
-        word_timestamps=word_timestamps,
+        str(source) if isinstance(source, (str, Path)) else source, **options
     )
     on_language(info.language)
     result = []
     for segment in segments:
-        if segment.text.strip():
+        if segment.text.strip() and not is_silence(segment):
             words = (
                 [(word.start, word.end, word.word) for word in segment.words]
                 if word_timestamps and segment.words

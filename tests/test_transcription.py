@@ -68,3 +68,41 @@ class TranscriptionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RobustnessTests(unittest.TestCase):
+    def _run(self, segments, **kwargs):
+        model = Mock()
+        model.transcribe.return_value = (iter(segments), Mock(duration=10, language="es"))
+        return model, transcribe(model, "a.wav", "es", **kwargs)
+
+    def test_decoding_does_not_condition_on_previous_text(self):
+        model, _ = self._run([Segment(0, 1, "Hola")])
+        options = model.transcribe.call_args.kwargs
+        self.assertIs(options["condition_on_previous_text"], False)
+        self.assertEqual(options["no_speech_threshold"], 0.6)
+        self.assertEqual(options["vad_parameters"]["min_silence_duration_ms"], 500)
+        self.assertGreater(len(options["temperature"]), 1)
+        self.assertIsNone(options["initial_prompt"])
+        self.assertNotIn("hallucination_silence_threshold", options)
+
+    def test_prompt_and_word_options_are_forwarded(self):
+        model, _ = self._run(
+            [Segment(0, 1, "SNS")], initial_prompt="  SNS, PDPCM ", word_timestamps=True
+        )
+        options = model.transcribe.call_args.kwargs
+        self.assertEqual(options["initial_prompt"], "SNS, PDPCM")
+        self.assertEqual(options["hallucination_silence_threshold"], 2.0)
+
+    def test_confident_silence_is_dropped_but_quiet_speech_is_kept(self):
+        from types import SimpleNamespace
+
+        def seg(text, no_speech, logprob):
+            return SimpleNamespace(
+                start=0, end=1, text=text, words=None, no_speech_prob=no_speech, avg_logprob=logprob
+            )
+
+        _, result = self._run(
+            [seg("Gracias por ver", 0.9, -1.5), seg("Hola", 0.9, -0.3), seg("Adiós", 0.1, -1.5)]
+        )
+        self.assertEqual([s.text for s in result], ["Hola", "Adiós"])

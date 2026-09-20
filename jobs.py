@@ -51,6 +51,7 @@ def inference_worker(job, mailbox):
                     progress,
                     word_timestamps=job["speakers"],
                     on_language=detected.append,
+                    initial_prompt=job.get("prompt"),
                 )
                 if speaker_model is not None:
                     from diarization import diarize

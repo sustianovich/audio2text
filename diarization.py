@@ -119,19 +119,31 @@ SANDWICH_GAP = 1.0  # A short run between the same speaker is absorbed if this c
 BOUNDARY_GAP = 0.3  # A short run touching a neighbour joins it if this close.
 
 
-def _speaker_of(start, end, turns, starts, prefix_ends):
-    """Speaker with the largest overlap, else the nearest turn within a small gap."""
+def _speaker_of(start, end, turns, starts, prefix_ends, prefix_turn):
+    """Speaker with the largest overlap, else the nearest turn within a small gap.
+
+    Turns are sorted by start. `prefix_ends[i]` is the latest end among turns[:i + 1] and
+    `prefix_turn[i]` the index of the first turn reaching it, so both searches are
+    logarithmic instead of scanning every turn.
+    """
     scores = {}
-    first = bisect_right(prefix_ends, start)
-    last = bisect_left(starts, end)
+    first = bisect_right(prefix_ends, start)  # Turns before this all end by `start`.
+    last = bisect_left(starts, end)  # Turns from this on all start at or after `end`.
     for turn_start, turn_end, speaker in turns[first:last]:
         overlap = max(0, min(end, turn_end) - max(start, turn_start))
         if overlap:
             scores[speaker] = scores.get(speaker, 0) + overlap
     if scores:
         return max(scores, key=scores.get)
+    # No overlap: only the latest-ending earlier turn, the turns touching the word and the
+    # first later turn can be nearest. Checked in index order so ties match a full scan.
+    candidates = [prefix_turn[first - 1]] if first else []
+    candidates += range(first, last)
+    if last < len(turns):
+        candidates.append(last)
     nearest, distance = None, NEAREST_TURN_GAP
-    for turn_start, turn_end, speaker in turns:
+    for index in candidates:
+        turn_start, turn_end, speaker = turns[index]
         gap = max(0, turn_start - end, start - turn_end)
         if gap < distance:
             nearest, distance = speaker, gap
@@ -186,15 +198,20 @@ def label_segments(segments, turns):
         if speaker not in labels:
             labels[speaker] = f"Speaker {len(labels) + 1}"
     starts = [turn[0] for turn in turns]
-    prefix_ends = []
-    for _, end, _ in turns:
-        prefix_ends.append(max(end, prefix_ends[-1] if prefix_ends else end))
+    prefix_ends, prefix_turn = [], []
+    for index, (_, end, _) in enumerate(turns):
+        if prefix_ends and prefix_ends[-1] >= end:
+            prefix_ends.append(prefix_ends[-1])
+            prefix_turn.append(prefix_turn[-1])
+        else:
+            prefix_ends.append(end)
+            prefix_turn.append(index)
     entries = []
     for number, segment in enumerate(segments):
         pieces = segment.words or [(segment.start, segment.end, segment.text)]
         for start, end, text in pieces:
             if text.strip():
-                speaker = _speaker_of(start, end, turns, starts, prefix_ends)
+                speaker = _speaker_of(start, end, turns, starts, prefix_ends, prefix_turn)
                 entries.append([number, start, end, text, speaker])
     _smooth(entries)
     result = []
