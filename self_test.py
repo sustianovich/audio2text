@@ -1,4 +1,5 @@
 """Offline smoke check used to validate the packaged Windows application."""
+
 from pathlib import Path
 import json
 import tempfile
@@ -8,8 +9,7 @@ import traceback
 
 
 def sleeping_worker(job, mailbox):
-    from jobs import write_json
-    write_json(Path(mailbox) / "status.json", {"text": "probe-ready"})
+    mailbox.put(("status", "probe-ready"))
     time.sleep(120)
 
 
@@ -26,13 +26,16 @@ def run(report, job_path=None):
         from faster_whisper.vad import get_speech_timestamps, VadOptions
         from faster_whisper import WhisperModel
         from docx import Document
+
         assert get_speech_timestamps(np.zeros(16000, dtype=np.float32), VadOptions()) == []
         checks.append("packaged inference imports and VAD model")
         app = App()
         app.withdraw()
         app.update()
-        assert app.input_dir.get() == "input_audio"
-        assert app.word_output.get() and app.md_output.get()
+        from settings import LANGUAGES
+
+        assert app.language.get() in LANGUAGES
+        assert hasattr(app, "srt_output")
         checks.append("UI startup")
         app.destroy()
         app = None
@@ -43,10 +46,12 @@ def run(report, job_path=None):
             checks.append("Word and Markdown speaker exports")
             cancelled = threading.Event()
             events = []
+
             def emit(kind, value):
                 events.append((kind, value))
                 if kind == "status" and value == "probe-ready":
                     cancelled.set()
+
             job = {"files": [], "output": folder, "formats": ["md"]}
             timer = threading.Timer(20, cancelled.set)
             timer.start()

@@ -17,8 +17,12 @@ class TranscriptionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             segments = [Segment(65, 70, "Hola, ¿cómo estás?")]
             md, docx = export("audio.m4a", folder, segments, "es", True)
-            self.assertIn("[00:01:05 – 00:01:10] Hola, ¿cómo estás?", md.read_text(encoding="utf-8"))
-            self.assertIn("Hola, ¿cómo estás?", "\n".join(p.text for p in Document(docx).paragraphs))
+            self.assertIn(
+                "[00:01:05 – 00:01:10] Hola, ¿cómo estás?", md.read_text(encoding="utf-8")
+            )
+            self.assertIn(
+                "Hola, ¿cómo estás?", "\n".join(p.text for p in Document(docx).paragraphs)
+            )
             second = export("audio.m4a", folder, segments, "en")
             self.assertNotEqual(md, second[0])
             self.assertTrue(md.exists() and docx.exists())
@@ -26,13 +30,15 @@ class TranscriptionTests(unittest.TestCase):
     def test_selected_output_formats(self):
         for formats in (("md",), ("docx",), ("md", "docx")):
             with self.subTest(formats=formats), tempfile.TemporaryDirectory() as folder:
-                paths = export("audio.m4a", folder, [Segment(0, 1, "Hello")],
-                               "en", formats=formats)
+                paths = export("audio.m4a", folder, [Segment(0, 1, "Hello")], "en", formats=formats)
                 self.assertEqual({p.suffix for p in paths}, {"." + fmt for fmt in formats})
                 self.assertEqual(set(Path(folder).iterdir()), set(paths))
                 for path in paths:
-                    text = (path.read_text(encoding="utf-8") if path.suffix == ".md"
-                            else "\n".join(p.text for p in Document(path).paragraphs))
+                    text = (
+                        path.read_text(encoding="utf-8")
+                        if path.suffix == ".md"
+                        else "\n".join(p.text for p in Document(path).paragraphs)
+                    )
                     self.assertIn("Hello", text)
 
     def test_invalid_formats_write_nothing(self):

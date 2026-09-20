@@ -1,3 +1,4 @@
+import gc
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,10 @@ class AppTests(unittest.TestCase):
         self.folder = tempfile.TemporaryDirectory()
         self.root_patch = patch.object(app, "ROOT", Path(self.folder.name) / "new" / "workspace")
         self.root_patch.start()
+        self.settings_patch = patch.object(app, "load_settings", return_value=app.DEFAULTS.copy())
+        self.settings_patch.start()
+        self.save_patch = patch.object(app, "save_settings")
+        self.save_patch.start()
         self.ui = app.App()
         self.ui.withdraw()
         self.ui.update()
@@ -21,6 +26,10 @@ class AppTests(unittest.TestCase):
         self.ui.destroy()
         self.root_patch.stop()
         self.folder.cleanup()
+        self.settings_patch.stop()
+        self.save_patch.stop()
+        self.ui = None
+        gc.collect()
 
     def test_first_start_creates_nested_workspace(self):
         self.assertTrue((app.ROOT / "input_audio").is_dir())

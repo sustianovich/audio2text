@@ -1,11 +1,25 @@
 """Local media transcription and paired document export."""
+
 from dataclasses import dataclass
 from pathlib import Path
-from paths import ROOT, MODEL_DIR
+from paths import MODEL_DIR
 import os
 import tempfile
+import shutil
 
-SUPPORTED = {".m4v", ".m4a", ".mp4", ".mp3", ".wav", ".flac", ".ogg", ".aac", ".webm", ".mov", ".wma"}
+SUPPORTED = {
+    ".m4v",
+    ".m4a",
+    ".mp4",
+    ".mp3",
+    ".wav",
+    ".flac",
+    ".ogg",
+    ".aac",
+    ".webm",
+    ".mov",
+    ".wma",
+}
 
 
 @dataclass
@@ -14,53 +28,60 @@ class Segment:
     end: float
     text: str
     speaker: str | None = None
-    words: list | None = None
+    words: list[tuple[float, float, str]] | None = None
 
 
-def discover(folder):
+def discover(folder: str | Path) -> list[Path]:
     folder = Path(folder).expanduser().resolve()
     if not folder.is_dir():
         raise ValueError("La carpeta de entrada no existe.")
-    return sorted((p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in SUPPORTED),
-                  key=lambda p: p.name.casefold())
+    return sorted(
+        (p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in SUPPORTED),
+        key=lambda p: p.name.casefold(),
+    )
 
 
-def timestamp(seconds):
+def timestamp(seconds: float) -> str:
     seconds = max(0, int(seconds))
     return f"{seconds // 3600:02}:{seconds // 60 % 60:02}:{seconds % 60:02}"
 
 
+def srt_timestamp(seconds: float) -> str:
+    milliseconds = max(0, round(seconds * 1000))
+    whole, fraction = divmod(milliseconds, 1000)
+    return f"{timestamp(whole)},{fraction:03d}"
+
+
 def export(source, output, segments, language, timestamps=False, formats=("md", "docx")):
     formats = tuple(dict.fromkeys(formats))
-    if not formats or any(fmt not in {"md", "docx"} for fmt in formats):
-        raise ValueError("Select at least one valid output format: md, docx.")
+    if not formats or any(fmt not in {"md", "docx", "srt"} for fmt in formats):
+        raise ValueError("Select at least one valid output format: md, docx, srt.")
     # Keep output ordering stable for callers.
-    extensions = tuple("." + fmt for fmt in ("md", "docx") if fmt in formats)
+    extensions = tuple("." + fmt for fmt in ("md", "docx", "srt") if fmt in formats)
     output = Path(output).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     # Include the source extension so similarly named audio/video files stay distinct.
     stem = Path(source).name
-    candidate = stem
-    index = 2
-    while any((output / f"{candidate}{ext}").exists() for ext in extensions):
-        candidate = f"{stem} ({index})"
-        index += 1
-    targets = tuple(output / f"{candidate}{ext}" for ext in extensions)
     title = Path(source).name
-    language_name = {"es": "Español", "en": "English"}[language]
+    language_name = {"es": "Español", "en": "English"}.get(language, language or "Auto")
     document = None
     if "docx" in formats:
         from docx import Document
+
         document = Document()
         document.add_heading(title, 0)
         document.add_paragraph(f"Idioma / Language: {language_name}")
     lines = [f"# {title}", "", f"Idioma / Language: {language_name}", ""]
+    subtitles = []
     for segment in segments:
         text = segment.text.strip()
         if not text:
             continue
         if segment.speaker:
             text = f"{segment.speaker}: {text}"
+        subtitles.append(
+            f"{len(subtitles) + 1}\n{srt_timestamp(segment.start)} --> {srt_timestamp(segment.end)}\n{text}\n"
+        )
         if timestamps:
             text = f"[{timestamp(segment.start)} – {timestamp(segment.end)}] {text}"
         lines.extend([text, ""])
@@ -76,13 +97,50 @@ def export(source, output, segments, language, timestamps=False, formats=("md", 
         for temp, suffix in zip(temporary, extensions):
             if suffix == ".md":
                 temp.write_text("\n".join(lines), encoding="utf-8")
+            elif suffix == ".srt":
+                temp.write_text("\n".join(subtitles), encoding="utf-8")
             else:
                 document.save(str(temp))
-        for temp, target in zip(temporary, targets):
-            # Exclusive creation also prevents overwriting a file from another run.
-            with target.open("xb") as handle:
-                published.append(target)
-                handle.write(temp.read_bytes())
+        index = 1
+        while True:
+            candidate = stem if index == 1 else f"{stem} ({index})"
+            targets = tuple(output / f"{candidate}{ext}" for ext in extensions)
+            reservation = output / f".{candidate}.export-lock"
+            try:
+                lock = reservation.open("xb")
+            except FileExistsError:
+                index += 1
+                continue
+            try:
+                lock.close()
+                if any(target.exists() for target in targets):
+                    index += 1
+                    continue
+                try:
+                    for temp, target in zip(temporary, targets):
+                        # Atomic publication without replacing an existing file.
+                        os.link(temp, target)
+                        published.append(target)
+                except FileExistsError:
+                    for target in published:
+                        target.unlink(missing_ok=True)
+                    published.clear()
+                    index += 1
+                    continue
+                except OSError as exc:
+                    if exc.errno not in {1, 18, 38, 95}:
+                        raise
+                    # Filesystems without hard links retain exclusive-create safety.
+                    for temp, target in zip(temporary, targets):
+                        if target in published:
+                            continue
+                        with target.open("xb") as handle:
+                            published.append(target)
+                            with temp.open("rb") as source_handle:
+                                shutil.copyfileobj(source_handle, handle)
+                break
+            finally:
+                reservation.unlink(missing_ok=True)
     except Exception:
         for path in published:
             path.unlink(missing_ok=True)
@@ -95,19 +153,35 @@ def export(source, output, segments, language, timestamps=False, formats=("md", 
 
 def load_model(name):
     from faster_whisper import WhisperModel
-    return WhisperModel(name, device="cpu", compute_type="int8",
-                        download_root=str(MODEL_DIR))
+
+    return WhisperModel(name, device="cpu", compute_type="int8", download_root=str(MODEL_DIR))
 
 
-def transcribe(model, source, language, on_progress=lambda value: None, word_timestamps=False):
-    segments, info = model.transcribe(str(source) if isinstance(source, (str, Path)) else source,
-                                     language=language, task="transcribe", beam_size=5,
-                                     vad_filter=True, word_timestamps=word_timestamps)
+def transcribe(
+    model,
+    source,
+    language,
+    on_progress=lambda value: None,
+    word_timestamps=False,
+    on_language=lambda language: None,
+):
+    segments, info = model.transcribe(
+        str(source) if isinstance(source, (str, Path)) else source,
+        language=language,
+        task="transcribe",
+        beam_size=5,
+        vad_filter=True,
+        word_timestamps=word_timestamps,
+    )
+    on_language(info.language)
     result = []
     for segment in segments:
         if segment.text.strip():
-            words = ([(word.start, word.end, word.word) for word in segment.words]
-                     if word_timestamps and segment.words else None)
+            words = (
+                [(word.start, word.end, word.word) for word in segment.words]
+                if word_timestamps and segment.words
+                else None
+            )
             result.append(Segment(segment.start, segment.end, segment.text.strip(), words=words))
         on_progress(min(100, segment.end / max(info.duration, 1) * 100))
     if not result:
