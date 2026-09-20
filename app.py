@@ -31,7 +31,7 @@ if sys.platform == "win32" and not getattr(sys, "frozen", False):
 
 from paths import ROOT
 from transcription import discover
-from settings import DEFAULTS, LANGUAGES, load_settings, save_settings
+from settings import DEFAULTS, LANGUAGES, SENSITIVITY, load_settings, save_settings
 from jobs import run_job
 
 
@@ -71,6 +71,8 @@ class App(tk.Tk):
         self.timestamps = tk.BooleanVar(value=False)
         self.speakers = tk.BooleanVar(value=False)
         self.speaker_count = tk.StringVar(value="0")
+        self.speaker_sensitivity = tk.StringVar(value="Normal")
+        self.warnings = []
         self.word_output = tk.BooleanVar(value=True)
         self.md_output = tk.BooleanVar(value=True)
         self.srt_output = tk.BooleanVar(value=False)
@@ -143,7 +145,16 @@ class App(tk.Tk):
             speaker_options, from_=0, to=20, textvariable=self.speaker_count, width=4
         )
         count.pack(side="left", padx=6)
-        self.controls.extend([speaker_check, count])
+        ttk.Label(speaker_options, text="Separación / Split:").pack(side="left", padx=(10, 0))
+        sensitivity = ttk.Combobox(
+            speaker_options,
+            textvariable=self.speaker_sensitivity,
+            values=list(SENSITIVITY),
+            state="readonly",
+            width=20,
+        )
+        sensitivity.pack(side="left", padx=6)
+        self.controls.extend([speaker_check, count, sensitivity])
         ttk.Label(
             body,
             text="small: equilibrio de calidad y velocidad. Modelos mayores: más lentos.\n"
@@ -253,6 +264,7 @@ class App(tk.Tk):
             return
         self.persist_settings()
         self.cancelled.clear()
+        self.warnings = []
         self.busy = True
         self.cancel_button.configure(state="normal")
         for widget in self.controls:
@@ -272,6 +284,7 @@ class App(tk.Tk):
             "formats": formats,
             "speakers": self.speakers.get(),
             "speaker_count": count,
+            "speaker_threshold": SENSITIVITY[self.speaker_sensitivity.get()],
         }
         threading.Thread(
             target=run_job,
@@ -292,6 +305,8 @@ class App(tk.Tk):
                 if kind == "status":
                     if not self.cancelled.is_set():
                         self.status.set(value)
+                elif kind == "warning":
+                    self.warnings.append(value)
                 elif kind == "progress":
                     self.progress.stop()
                     self.progress.configure(mode="determinate", value=value)
@@ -323,10 +338,10 @@ class App(tk.Tk):
                         messagebox.showerror("Resultado / Result", "\n\n".join(errors))
                     else:
                         self.progress["value"] = 100
-                        messagebox.showinfo(
-                            "Completado / Complete",
-                            f"{completed} archivo(s): {format_label}\n{self.output_dir.get()}",
-                        )
+                        message = f"{completed} archivo(s): {format_label}\n{self.output_dir.get()}"
+                        if self.warnings:
+                            message += "\n\nAvisos / Warnings:\n" + "\n".join(self.warnings)
+                        messagebox.showinfo("Completado / Complete", message)
         except queue.Empty:
             pass
         self.after(100, self.poll)

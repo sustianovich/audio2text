@@ -73,7 +73,7 @@ def download(url, destination, status, expected_hash=None):
         temporary.unlink(missing_ok=True)
 
 
-def load_diarizer(num_speakers=0, status=lambda value: None):
+def load_diarizer(num_speakers=0, status=lambda value: None, threshold=0.5):
     import sherpa_onnx
 
     cache = MODEL_DIR / "speakers"
@@ -101,7 +101,9 @@ def load_diarizer(num_speakers=0, status=lambda value: None):
             num_threads=2,
         ),
         embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(embedding), num_threads=2),
-        clustering=sherpa_onnx.FastClusteringConfig(num_clusters=num_speakers or -1, threshold=0.5),
+        clustering=sherpa_onnx.FastClusteringConfig(
+            num_clusters=num_speakers or -1, threshold=threshold
+        ),
         min_duration_on=0.3,
         min_duration_off=0.5,
     )
@@ -110,8 +112,74 @@ def load_diarizer(num_speakers=0, status=lambda value: None):
     return sherpa_onnx.OfflineSpeakerDiarization(config)
 
 
+NEAREST_TURN_GAP = 1.5  # A word this close to a turn still belongs to its speaker.
+SHORT_RUN_SECONDS = 0.5  # A speaker run shorter than this, ...
+SHORT_RUN_WORDS = 2  # ... with at most this many words, is suspect.
+SANDWICH_GAP = 1.0  # A short run between the same speaker is absorbed if this close.
+BOUNDARY_GAP = 0.3  # A short run touching a neighbour joins it if this close.
+
+
+def _speaker_of(start, end, turns, starts, prefix_ends):
+    """Speaker with the largest overlap, else the nearest turn within a small gap."""
+    scores = {}
+    first = bisect_right(prefix_ends, start)
+    last = bisect_left(starts, end)
+    for turn_start, turn_end, speaker in turns[first:last]:
+        overlap = max(0, min(end, turn_end) - max(start, turn_start))
+        if overlap:
+            scores[speaker] = scores.get(speaker, 0) + overlap
+    if scores:
+        return max(scores, key=scores.get)
+    nearest, distance = None, NEAREST_TURN_GAP
+    for turn_start, turn_end, speaker in turns:
+        gap = max(0, turn_start - end, start - turn_end)
+        if gap < distance:
+            nearest, distance = speaker, gap
+    return nearest
+
+
+def _smooth(entries):
+    """Fix isolated words that alignment put on the wrong side of a speaker change.
+
+    Entries are [segment_index, start, end, text, speaker]. Only short runs are
+    touched, and only towards a neighbour that is close in time.
+    """
+    runs = []
+    for entry in entries:
+        if runs and runs[-1][0][4] == entry[4]:
+            runs[-1].append(entry)
+        else:
+            runs.append([entry])
+    decisions = []
+    for index in range(1, len(runs) - 1):
+        run, before, after = runs[index], runs[index - 1], runs[index + 1]
+        speaker = run[0][4]
+        if (
+            speaker is None
+            or len(run) > SHORT_RUN_WORDS
+            or run[-1][2] - run[0][1] >= SHORT_RUN_SECONDS
+        ):
+            continue
+        gap_before = run[0][1] - before[-1][2]
+        gap_after = after[0][1] - run[-1][2]
+        neighbour = None
+        if before[0][4] == after[0][4] and max(gap_before, gap_after) < SANDWICH_GAP:
+            neighbour = before[0][4]
+        elif min(gap_before, gap_after) <= BOUNDARY_GAP:
+            candidate = before if gap_before <= gap_after else after
+            neighbour = candidate[0][4]
+        if neighbour is not None:
+            decisions.append((run, neighbour))
+    for run, neighbour in decisions:
+        for entry in run:
+            entry[4] = neighbour
+
+
 def label_segments(segments, turns):
-    """Assign the greatest overlapping turn to each word; never invent a match."""
+    """Label each word with its speaker, then clean up isolated mislabelled words.
+
+    Words with no nearby speaker turn are labelled "Speaker ?" rather than guessed.
+    """
     turns = sorted(turns, key=lambda turn: turn[0])
     labels = {}
     for _, _, speaker in turns:
@@ -121,27 +189,25 @@ def label_segments(segments, turns):
     prefix_ends = []
     for _, end, _ in turns:
         prefix_ends.append(max(end, prefix_ends[-1] if prefix_ends else end))
-    result = []
-    for segment in segments:
+    entries = []
+    for number, segment in enumerate(segments):
         pieces = segment.words or [(segment.start, segment.end, segment.text)]
-        group = None
         for start, end, text in pieces:
-            if not text.strip():
-                continue
-            scores = {}
-            first = bisect_right(prefix_ends, start)
-            last = bisect_left(starts, end)
-            for turn_start, turn_end, speaker in turns[first:last]:
-                overlap = max(0, min(end, turn_end) - max(start, turn_start))
-                if overlap:
-                    scores[speaker] = scores.get(speaker, 0) + overlap
-            speaker = labels[max(scores, key=scores.get)] if scores else "Speaker ?"
-            if group is not None and group.speaker == speaker:
-                group.end = end
-                group.text += text if text.startswith(" ") else " " + text
-            else:
-                group = Segment(start, end, text.strip(), speaker=speaker)
-                result.append(group)
+            if text.strip():
+                speaker = _speaker_of(start, end, turns, starts, prefix_ends)
+                entries.append([number, start, end, text, speaker])
+    _smooth(entries)
+    result = []
+    group = None
+    for number, start, end, text, speaker in entries:
+        speaker = labels[speaker] if speaker is not None else "Speaker ?"
+        if group is not None and group[0] == number and group[1].speaker == speaker:
+            group[1].end = end
+            group[1].text += text if text.startswith(" ") else " " + text
+        else:
+            segment = Segment(start, end, text.strip(), speaker=speaker)
+            group = (number, segment)
+            result.append(segment)
     return result
 
 

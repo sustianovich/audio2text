@@ -52,6 +52,50 @@ def srt_timestamp(seconds: float) -> str:
     return f"{timestamp(whole)},{fraction:03d}"
 
 
+PARAGRAPH_GAP = 1.5  # Seconds of silence that always start a new paragraph.
+PARAGRAPH_SOFT_CHARS = 450  # After this length, break at the next sentence end.
+PARAGRAPH_MAX_CHARS = 900  # Hard limit even without sentence punctuation.
+SENTENCE_END = (".", "?", "!", "…", "。")
+
+
+def group_paragraphs(segments: list[Segment]) -> list[Segment]:
+    """Join short Whisper segments into readable paragraphs.
+
+    A paragraph ends at a change of speaker, a long pause, or (once it is long
+    enough) a sentence end. Of a run of identical segments, a typical decoding
+    loop, only the first two are kept.
+    """
+    cleaned: list[Segment] = []
+    run = 0
+    for segment in segments:
+        text = " ".join(segment.text.split())
+        if not text:
+            continue
+        previous = cleaned[-1] if cleaned else None
+        run = run + 1 if previous and previous.text.casefold() == text.casefold() else 1
+        if run > 2:
+            previous.end = max(previous.end, segment.end)
+            continue
+        cleaned.append(Segment(segment.start, segment.end, text, segment.speaker))
+    paragraphs: list[Segment] = []
+    for segment in cleaned:
+        current = paragraphs[-1] if paragraphs else None
+        if (
+            current is not None
+            and current.speaker == segment.speaker
+            and segment.start - current.end < PARAGRAPH_GAP
+            and len(current.text) + len(segment.text) < PARAGRAPH_MAX_CHARS
+            and not (
+                len(current.text) >= PARAGRAPH_SOFT_CHARS and current.text.endswith(SENTENCE_END)
+            )
+        ):
+            current.text += " " + segment.text
+            current.end = max(current.end, segment.end)
+        else:
+            paragraphs.append(segment)
+    return paragraphs
+
+
 def export(source, output, segments, language, timestamps=False, formats=("md", "docx")):
     formats = tuple(dict.fromkeys(formats))
     if not formats or any(fmt not in {"md", "docx", "srt"} for fmt in formats):
@@ -82,8 +126,12 @@ def export(source, output, segments, language, timestamps=False, formats=("md", 
         subtitles.append(
             f"{len(subtitles) + 1}\n{srt_timestamp(segment.start)} --> {srt_timestamp(segment.end)}\n{text}\n"
         )
+    for paragraph in group_paragraphs(segments):
+        text = paragraph.text
+        if paragraph.speaker:
+            text = f"{paragraph.speaker}: {text}"
         if timestamps:
-            text = f"[{timestamp(segment.start)} – {timestamp(segment.end)}] {text}"
+            text = f"[{timestamp(paragraph.start)} – {timestamp(paragraph.end)}] {text}"
         lines.extend([text, ""])
         if document is not None:
             document.add_paragraph(text)

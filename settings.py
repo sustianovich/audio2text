@@ -16,6 +16,12 @@ LANGUAGES = {
     "Italiano": "it",
     "Português": "pt",
 }
+# Clustering threshold: higher merges similar voices, lower splits them.
+SENSITIVITY = {
+    "Menos voces / Fewer": 0.6,
+    "Normal": 0.5,
+    "Más voces / More": 0.4,
+}
 DEFAULTS = {
     "input_dir": "input_audio",
     "output_dir": "output_text",
@@ -24,6 +30,7 @@ DEFAULTS = {
     "timestamps": False,
     "speakers": False,
     "speaker_count": "0",
+    "speaker_sensitivity": "Normal",
     "word_output": True,
     "md_output": True,
     "srt_output": False,
@@ -45,6 +52,8 @@ def load_settings(path: Path | None = None) -> dict:
         if key == "language" and value not in LANGUAGES:
             continue
         if key == "model" and value not in {"tiny", "base", "small", "medium", "large-v3"}:
+            continue
+        if key == "speaker_sensitivity" and value not in SENSITIVITY:
             continue
         if key == "speaker_count" and value not in {str(i) for i in range(21)}:
             continue

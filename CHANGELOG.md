@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Normalize audio level (DC offset, speech-level gain, peak limit) before VAD,
+  transcription and speaker identification; warn about very quiet or clipped audio.
+- Group segments into paragraphs in Word/Markdown by pause, speaker and sentence
+  end, and cap decoding-loop repetitions. SRT keeps the original short cues.
+- Speaker labels: absorb isolated mislabelled words, assign words in small gaps to
+  the nearest turn, and add a voice-split sensitivity setting.
+
 ## 1.2.0
 
 - Persist validated preferences and add automatic detection and more language choices.

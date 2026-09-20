@@ -29,13 +29,20 @@ def inference_worker(job, mailbox):
         if job["speakers"]:
             from diarization import load_diarizer
 
-            speaker_model = load_diarizer(job["speaker_count"], status)
+            speaker_model = load_diarizer(
+                job["speaker_count"], status, job.get("speaker_threshold", 0.5)
+            )
         for index, source in enumerate(job["files"]):
             status(f"{index + 1}/{len(job['files'])} — {Path(source).name}")
             try:
                 from faster_whisper.audio import decode_audio
 
                 audio = decode_audio(source, sampling_rate=16000)
+                from audio import analyze, normalize
+
+                for warning in analyze(audio):
+                    mailbox.put(("warning", f"{Path(source).name}: {warning}"))
+                audio = normalize(audio)
                 detected = []
                 segments = transcribe(
                     model,
