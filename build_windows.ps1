@@ -19,6 +19,8 @@ $candidates = @(
 )
 $compiler = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 if (-not $compiler) { throw 'Install Inno Setup 6: winget install --id JRSoftware.InnoSetup --exact' }
-& $compiler /Q installer.iss
+$version = & $python -c "from importlib.metadata import version; print(version('audio2text'))"
+if ($LASTEXITCODE -ne 0) { throw 'Could not read application version' }
+& $compiler /Q "/DAppVersion=$version" installer.iss
 if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
-Write-Host 'Installer: release\Audio2Text-Setup-1.1.0.exe'
+Write-Host "Installer: release\Audio2Text-Setup-$version.exe"

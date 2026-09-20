@@ -1,3 +1,2 @@
-faster-whisper>=1.2.0,<2
-python-docx>=1.2.0,<2
-sherpa-onnx==1.13.8
+# Dependencies are maintained in pyproject.toml.
+.

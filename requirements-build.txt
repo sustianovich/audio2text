@@ -1,2 +1,2 @@
--r requirements.txt
-pyinstaller==6.22.3
+# Build dependencies are maintained in pyproject.toml.
+.[build]

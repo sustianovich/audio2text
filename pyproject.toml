@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "audio2text"
+version = "1.2.0"
+description = "Local desktop transcription with speaker labels and document/subtitle export"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["faster-whisper>=1.2.0,<2", "python-docx>=1.2.0,<2", "sherpa-onnx==1.13.8"]
+
+[project.optional-dependencies]
+build = ["pyinstaller==6.22.3"]
+dev = ["ruff>=0.12,<1"]
+
+[tool.setuptools]
+py-modules = ["app", "diarization", "jobs", "paths", "settings", "transcription", "self_test"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = ["build", "dist", ".verification"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"app.py" = ["E402"]
+"self_test.py" = ["F401"]

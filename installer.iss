@@ -1,4 +1,6 @@
-#define AppVersion "1.1.0"
+#ifndef AppVersion
+#error AppVersion must be supplied by build_windows.ps1 from pyproject.toml
+#endif
 [Setup]
 AppId={{81633412-E442-4940-9818-62541A2DD032}
 AppName=Audio2Text

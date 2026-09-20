@@ -30,3 +30,7 @@ build/
 dist/
 release/
 .verification/
+
+# Python packaging and lint cache
+*.egg-info/
+.ruff_cache/
