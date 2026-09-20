@@ -20,7 +20,7 @@ After setup, the last command launches directly without checking packages online
 
 1. Put recordings in **input_audio**, or choose an input folder in the UI.
 2. Click **Refresh** after typing a folder or adding recordings. Select files (Ctrl/Shift for multiple).
-3. Choose the output folder (default: **output_text**).
+3. Choose the output folder (default: **output_text**). Default paths are displayed relative to the project folder, without a personal user path. Any relative path you enter is resolved from the project folder, even when launching from elsewhere. You can also browse to any other folder.
 4. Choose **Español** (default) or **English**, and a model. Start with **small**; tiny/base are faster, medium/large-v3 need more time and memory.
 5. Select **Word (.docx)**, **Markdown (.md)**, or both using the checkboxes (both selected by default).
 6. Optionally enable timestamps, then click **Transcribe**.

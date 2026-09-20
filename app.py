@@ -18,6 +18,22 @@ if sys.platform == "win32":
 from transcription import ROOT, discover, export, load_model, transcribe
 
 
+def resolve_folder(value):
+    """Resolve relative UI paths against the project, independent of launch directory."""
+    if not str(value).strip():
+        raise ValueError("Selecciona una carpeta. / Select a folder.")
+    path = Path(value).expanduser()
+    return (path if path.is_absolute() else ROOT / path).resolve()
+
+
+def display_folder(value):
+    path = resolve_folder(value)
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -29,8 +45,8 @@ class App(tk.Tk):
         self.events = queue.Queue()
         self.busy = False
         self.files = []
-        self.input_dir = tk.StringVar(value=str(ROOT / "input_audio"))
-        self.output_dir = tk.StringVar(value=str(ROOT / "output_text"))
+        self.input_dir = tk.StringVar(value="input_audio")
+        self.output_dir = tk.StringVar(value="output_text")
         self.language = tk.StringVar(value="Español")
         self.model = tk.StringVar(value="small")
         self.timestamps = tk.BooleanVar(value=False)
@@ -100,15 +116,19 @@ class App(tk.Tk):
         self.after(100, self.poll)
 
     def browse(self, variable):
-        path = filedialog.askdirectory(initialdir=variable.get(), mustexist=True)
+        try:
+            initial = resolve_folder(variable.get())
+        except ValueError:
+            initial = ROOT
+        path = filedialog.askdirectory(initialdir=str(initial), mustexist=True)
         if path:
-            variable.set(path)
+            variable.set(display_folder(path))
             if variable is self.input_dir:
                 self.refresh()
 
     def refresh(self):
         try:
-            self.files = discover(self.input_dir.get())
+            self.files = discover(resolve_folder(self.input_dir.get()))
         except Exception as exc:
             messagebox.showerror("Carpeta / Folder", str(exc))
             return
@@ -127,8 +147,14 @@ class App(tk.Tk):
             messagebox.showerror("Formato / Format",
                                  "Selecciona Word o Markdown. / Select Word or Markdown.")
             return
+        try:
+            input_path = resolve_folder(self.input_dir.get())
+            output_path = resolve_folder(self.output_dir.get())
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("Carpeta / Folder", str(exc))
+            return
         # Refresh if a folder was typed manually before starting.
-        if self.files and self.files[0].parent != Path(self.input_dir.get()).expanduser().resolve():
+        if self.files and self.files[0].parent != input_path:
             self.refresh()
             return
         selected = [self.files[i] for i in self.listbox.curselection()]
@@ -145,7 +171,7 @@ class App(tk.Tk):
         self.progress.configure(mode="indeterminate")
         self.progress.start()
         self.status.set("Cargando modelo / Loading model… La primera descarga puede tardar varios minutos.")
-        args = (selected, self.output_dir.get(), "es" if self.language.get() == "Español" else "en",
+        args = (selected, output_path, "es" if self.language.get() == "Español" else "en",
                 self.model.get(), self.timestamps.get(), formats)
         threading.Thread(target=self.work, args=args, daemon=True).start()
 
