@@ -22,9 +22,10 @@ After setup, the last command launches directly without checking packages online
 2. Click **Refresh** after typing a folder or adding recordings. Select files (Ctrl/Shift for multiple).
 3. Choose the output folder (default: **output_text**).
 4. Choose **Español** (default) or **English**, and a model. Start with **small**; tiny/base are faster, medium/large-v3 need more time and memory.
-5. Optionally enable timestamps, then click **Transcribe**.
+5. Select **Word (.docx)**, **Markdown (.md)**, or both using the checkboxes (both selected by default).
+6. Optionally enable timestamps, then click **Transcribe**.
 
-Both output formats are always created. Outputs include the source extension, e.g. recording.m4a.md and recording.m4a.docx. Repeated runs add a number rather than overwriting transcripts. Files are scanned in the chosen folder only, not subfolders.
+Only the checked output formats are created. At least one format must be selected. Outputs include the source extension, e.g. recording.m4a.md and recording.m4a.docx. Repeated runs add a number rather than overwriting transcripts. Files are scanned in the chosen folder only, not subfolders.
 
 Supported extensions: M4V, M4A, MP4, MP3, WAV, FLAC, OGG, AAC, WEBM, MOV, WMA. Video must contain a decodable audio track. The recording is decoded directly; no intermediate audio file or separate FFmpeg installation is needed.
 

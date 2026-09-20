@@ -34,6 +34,8 @@ class App(tk.Tk):
         self.language = tk.StringVar(value="Español")
         self.model = tk.StringVar(value="small")
         self.timestamps = tk.BooleanVar(value=False)
+        self.word_output = tk.BooleanVar(value=True)
+        self.md_output = tk.BooleanVar(value=True)
         self.status = tk.StringVar(value="Listo / Ready")
         body = ttk.Frame(self, padding=22)
         body.pack(fill="both", expand=True)
@@ -70,9 +72,14 @@ class App(tk.Tk):
                                   state="readonly", width=12)
             widget.pack(side="left", padx=(0, 15))
             self.controls.append(widget)
-        check = ttk.Checkbutton(body, text="Marcas de tiempo / Timestamps", variable=self.timestamps)
-        check.grid(row=6, column=0, columnspan=3, sticky="w", pady=10)
-        self.controls.append(check)
+        output_options = ttk.Frame(body)
+        output_options.grid(row=6, column=0, columnspan=3, sticky="w", pady=10)
+        for label, variable in (("Word (.docx)", self.word_output),
+                                ("Markdown (.md)", self.md_output),
+                                ("Marcas de tiempo / Timestamps", self.timestamps)):
+            check = ttk.Checkbutton(output_options, text=label, variable=variable)
+            check.pack(side="left", padx=(0, 16))
+            self.controls.append(check)
         ttk.Label(body, text="small: equilibrio de calidad y velocidad. Modelos mayores: más lentos.\n"
                   "Primera ejecución: descarga del modelo por Internet. Después funciona sin conexión.",
                   wraplength=800).grid(row=7, column=0, columnspan=3, sticky="w")
@@ -114,6 +121,12 @@ class App(tk.Tk):
     def start(self):
         if self.busy:
             return
+        formats = tuple(fmt for fmt, enabled in (("md", self.md_output.get()),
+                                                 ("docx", self.word_output.get())) if enabled)
+        if not formats:
+            messagebox.showerror("Formato / Format",
+                                 "Selecciona Word o Markdown. / Select Word or Markdown.")
+            return
         # Refresh if a folder was typed manually before starting.
         if self.files and self.files[0].parent != Path(self.input_dir.get()).expanduser().resolve():
             self.refresh()
@@ -133,10 +146,10 @@ class App(tk.Tk):
         self.progress.start()
         self.status.set("Cargando modelo / Loading model… La primera descarga puede tardar varios minutos.")
         args = (selected, self.output_dir.get(), "es" if self.language.get() == "Español" else "en",
-                self.model.get(), self.timestamps.get())
+                self.model.get(), self.timestamps.get(), formats)
         threading.Thread(target=self.work, args=args, daemon=True).start()
 
-    def work(self, files, output, language, model_name, timestamps):
+    def work(self, files, output, language, model_name, timestamps, formats):
         errors = []
         completed = 0
         try:
@@ -147,14 +160,14 @@ class App(tk.Tk):
                 try:
                     segments = transcribe(model, path, language,
                         lambda value, i=index: self.events.put(("progress", (i + value / 100) / len(files) * 100)))
-                    export(path, output, segments, language, timestamps)
+                    export(path, output, segments, language, timestamps, formats=formats)
                     completed += 1
                 except Exception as exc:
                     errors.append(f"{path.name}: {exc}")
         except Exception as exc:
             errors.append(str(exc))
         finally:
-            self.events.put(("done", (completed, errors)))
+            self.events.put(("done", (completed, errors, formats)))
 
     def poll(self):
         try:
@@ -174,13 +187,14 @@ class App(tk.Tk):
                     for widget in self.controls:
                         widget.configure(state="readonly" if isinstance(widget, ttk.Combobox) else "normal")
                     self.listbox.configure(state="normal")
-                    completed, errors = value
+                    completed, errors, formats = value
+                    format_label = " + ".join("Word" if fmt == "docx" else "Markdown" for fmt in formats)
                     self.status.set(f"Completados / Completed: {completed}. Errores / Errors: {len(errors)}.")
                     if errors:
                         messagebox.showerror("Resultado / Result", "\n\n".join(errors))
                     else:
                         self.progress["value"] = 100
-                        messagebox.showinfo("Completado / Complete", f"{completed} archivo(s): Word + Markdown\n{self.output_dir.get()}")
+                        messagebox.showinfo("Completado / Complete", f"{completed} archivo(s): {format_label}\n{self.output_dir.get()}")
         except queue.Empty:
             pass
         self.after(100, self.poll)

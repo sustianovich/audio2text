@@ -28,23 +28,30 @@ def timestamp(seconds):
     return f"{seconds // 3600:02}:{seconds // 60 % 60:02}:{seconds % 60:02}"
 
 
-def export(source, output, segments, language, timestamps=False):
-    from docx import Document
+def export(source, output, segments, language, timestamps=False, formats=("md", "docx")):
+    formats = tuple(dict.fromkeys(formats))
+    if not formats or any(fmt not in {"md", "docx"} for fmt in formats):
+        raise ValueError("Select at least one valid output format: md, docx.")
+    # Keep output ordering stable for callers.
+    extensions = tuple("." + fmt for fmt in ("md", "docx") if fmt in formats)
     output = Path(output).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     # Include the source extension so similarly named audio/video files stay distinct.
     stem = Path(source).name
     candidate = stem
     index = 2
-    while any((output / f"{candidate}{ext}").exists() for ext in (".md", ".docx")):
+    while any((output / f"{candidate}{ext}").exists() for ext in extensions):
         candidate = f"{stem} ({index})"
         index += 1
-    md_path, doc_path = (output / f"{candidate}{ext}" for ext in (".md", ".docx"))
+    targets = tuple(output / f"{candidate}{ext}" for ext in extensions)
     title = Path(source).name
     language_name = {"es": "Español", "en": "English"}[language]
-    document = Document()
-    document.add_heading(title, 0)
-    document.add_paragraph(f"Idioma / Language: {language_name}")
+    document = None
+    if "docx" in formats:
+        from docx import Document
+        document = Document()
+        document.add_heading(title, 0)
+        document.add_paragraph(f"Idioma / Language: {language_name}")
     lines = [f"# {title}", "", f"Idioma / Language: {language_name}", ""]
     for segment in segments:
         text = segment.text.strip()
@@ -53,17 +60,21 @@ def export(source, output, segments, language, timestamps=False):
         if timestamps:
             text = f"[{timestamp(segment.start)} – {timestamp(segment.end)}] {text}"
         lines.extend([text, ""])
-        document.add_paragraph(text)
+        if document is not None:
+            document.add_paragraph(text)
     temporary = []
     published = []
     try:
-        for suffix in (".md", ".docx"):
+        for suffix in extensions:
             fd, name = tempfile.mkstemp(dir=output, suffix=suffix)
             os.close(fd)
             temporary.append(Path(name))
-        temporary[0].write_text("\n".join(lines), encoding="utf-8")
-        document.save(str(temporary[1]))
-        for temp, target in zip(temporary, (md_path, doc_path)):
+        for temp, suffix in zip(temporary, extensions):
+            if suffix == ".md":
+                temp.write_text("\n".join(lines), encoding="utf-8")
+            else:
+                document.save(str(temp))
+        for temp, target in zip(temporary, targets):
             # Exclusive creation also prevents overwriting a file from another run.
             with target.open("xb") as handle:
                 published.append(target)
@@ -75,7 +86,7 @@ def export(source, output, segments, language, timestamps=False):
     finally:
         for path in temporary:
             path.unlink(missing_ok=True)
-    return md_path, doc_path
+    return targets
 
 
 def load_model(name):
