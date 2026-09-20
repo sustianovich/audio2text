@@ -1,0 +1,26 @@
+.venv/
+__pycache__/
+*.py[cod]
+.models/
+
+# Local recordings and transcripts (including placeholder files)
+input_audio/
+output_text/
+
+# Local credentials and private keys
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+id_rsa*
+id_ed25519*
+credentials*.json
+client_secret*.json
+secrets.*
+.secrets/
+.aws/
+.ssh/
