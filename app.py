@@ -1,21 +1,31 @@
 """Tk desktop interface. Run with python app.py."""
+import multiprocessing
+if __name__ == "__main__":
+    multiprocessing.freeze_support()
+
 from pathlib import Path
 import os
 import sys
+# Windowed executables do not provide stdout/stderr; libraries expect streams.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
 import queue
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 # Some Windows virtual environments fail to locate the base install's Tcl/Tk.
-if sys.platform == "win32":
+if sys.platform == "win32" and not getattr(sys, "frozen", False):
     for variable, directory, marker in (("TCL_LIBRARY", "tcl8.6", "init.tcl"),
                                          ("TK_LIBRARY", "tk8.6", "tk.tcl")):
         library = Path(sys.base_prefix) / "tcl" / directory
         if (library / marker).is_file():
             os.environ.setdefault(variable, str(library))
 
-from transcription import ROOT, discover, export, load_model, transcribe
+from transcription import ROOT, discover
+from jobs import run_job
 
 
 def resolve_folder(value):
@@ -38,18 +48,22 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Audio a texto")
-        self.geometry("880x660")
-        self.minsize(720, 580)
-        (ROOT / "input_audio").mkdir(exist_ok=True)
-        (ROOT / "output_text").mkdir(exist_ok=True)
+        self.geometry("920x740")
+        self.minsize(820, 700)
+        (ROOT / "input_audio").mkdir(parents=True, exist_ok=True)
+        (ROOT / "output_text").mkdir(parents=True, exist_ok=True)
         self.events = queue.Queue()
         self.busy = False
+        self.cancelled = threading.Event()
+        self.closing = False
         self.files = []
         self.input_dir = tk.StringVar(value="input_audio")
         self.output_dir = tk.StringVar(value="output_text")
         self.language = tk.StringVar(value="Español")
         self.model = tk.StringVar(value="small")
         self.timestamps = tk.BooleanVar(value=False)
+        self.speakers = tk.BooleanVar(value=False)
+        self.speaker_count = tk.StringVar(value="0")
         self.word_output = tk.BooleanVar(value=True)
         self.md_output = tk.BooleanVar(value=True)
         self.status = tk.StringVar(value="Listo / Ready")
@@ -96,24 +110,46 @@ class App(tk.Tk):
             check = ttk.Checkbutton(output_options, text=label, variable=variable)
             check.pack(side="left", padx=(0, 16))
             self.controls.append(check)
+        speaker_options = ttk.Frame(body)
+        speaker_options.grid(row=7, column=0, columnspan=3, sticky="w", pady=(0, 10))
+        speaker_check = ttk.Checkbutton(speaker_options, text="Identificar voces / Speaker labels",
+                                        variable=self.speakers)
+        speaker_check.pack(side="left", padx=(0, 16))
+        ttk.Label(speaker_options, text="Voces / Speakers (0 = auto):").pack(side="left")
+        count = ttk.Spinbox(speaker_options, from_=0, to=20, textvariable=self.speaker_count, width=4)
+        count.pack(side="left", padx=6)
+        self.controls.extend([speaker_check, count])
         ttk.Label(body, text="small: equilibrio de calidad y velocidad. Modelos mayores: más lentos.\n"
                   "Primera ejecución: descarga del modelo por Internet. Después funciona sin conexión.",
-                  wraplength=800).grid(row=7, column=0, columnspan=3, sticky="w")
+                  wraplength=800).grid(row=8, column=0, columnspan=3, sticky="w")
         buttons = ttk.Frame(body)
-        buttons.grid(row=8, column=0, columnspan=3, sticky="ew", pady=14)
+        buttons.grid(row=9, column=0, columnspan=3, sticky="ew", pady=14)
         for label, command in (("Actualizar / Refresh", self.refresh),
                                ("Seleccionar todos / Select all", lambda: self.listbox.selection_set(0, tk.END)),
                                ("Transcribir / Transcribe", self.start)):
             button = ttk.Button(buttons, text=label, command=command)
             button.pack(side="left", padx=(0, 8))
             self.controls.append(button)
+        self.cancel_button = ttk.Button(buttons, text="Cancelar / Cancel", command=self.cancel,
+                                        state="disabled")
+        self.cancel_button.pack(side="left")
         self.progress = ttk.Progressbar(body, maximum=100)
-        self.progress.grid(row=9, column=0, columnspan=3, sticky="ew")
+        self.progress.grid(row=10, column=0, columnspan=3, sticky="ew")
         ttk.Label(body, textvariable=self.status, wraplength=800).grid(
-            row=10, column=0, columnspan=3, sticky="w", pady=8)
+            row=11, column=0, columnspan=3, sticky="w", pady=8)
+        ttk.Button(body, text="Abrir salida / Open output folder", command=self.open_output).grid(
+            row=12, column=0, columnspan=3, sticky="w")
         self.protocol("WM_DELETE_WINDOW", self.close)
         self.refresh()
         self.after(100, self.poll)
+
+    def open_output(self):
+        try:
+            path = resolve_folder(self.output_dir.get())
+            path.mkdir(parents=True, exist_ok=True)
+            os.startfile(path)
+        except Exception as exc:
+            messagebox.showerror("Salida / Output", str(exc))
 
     def browse(self, variable):
         try:
@@ -164,59 +200,65 @@ class App(tk.Tk):
         if not self.output_dir.get().strip():
             messagebox.showerror("Salida / Output", "Elige una carpeta de salida.")
             return
+        try:
+            count = int(self.speaker_count.get()) if self.speakers.get() else 0
+            if not 0 <= count <= 20:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Voces / Speakers", "Elige 0 (auto) o 1-20 voces. / Choose 0 (auto) or 1-20 speakers.")
+            return
+        self.cancelled.clear()
         self.busy = True
+        self.cancel_button.configure(state="normal")
         for widget in self.controls:
             widget.configure(state="disabled")
         self.listbox.configure(state="disabled")
         self.progress.configure(mode="indeterminate")
         self.progress.start()
         self.status.set("Cargando modelo / Loading model… La primera descarga puede tardar varios minutos.")
-        args = (selected, output_path, "es" if self.language.get() == "Español" else "en",
-                self.model.get(), self.timestamps.get(), formats)
-        threading.Thread(target=self.work, args=args, daemon=True).start()
+        job = {"files": [str(path) for path in selected], "output": str(output_path),
+               "language": "es" if self.language.get() == "Espa\u00f1ol" else "en",
+               "model": self.model.get(), "timestamps": self.timestamps.get(),
+               "formats": formats, "speakers": self.speakers.get(), "speaker_count": count}
+        threading.Thread(target=run_job,
+                         args=(job, self.cancelled, lambda kind, value: self.events.put((kind, value))),
+                         daemon=True).start()
 
-    def work(self, files, output, language, model_name, timestamps, formats):
-        errors = []
-        completed = 0
-        try:
-            model = load_model(model_name)
-            self.events.put(("loaded", None))
-            for index, path in enumerate(files):
-                self.events.put(("status", f"{index + 1}/{len(files)} — {path.name}"))
-                try:
-                    segments = transcribe(model, path, language,
-                        lambda value, i=index: self.events.put(("progress", (i + value / 100) / len(files) * 100)))
-                    export(path, output, segments, language, timestamps, formats=formats)
-                    completed += 1
-                except Exception as exc:
-                    errors.append(f"{path.name}: {exc}")
-        except Exception as exc:
-            errors.append(str(exc))
-        finally:
-            self.events.put(("done", (completed, errors, formats)))
+    def cancel(self):
+        if self.busy:
+            self.cancelled.set()
+            self.cancel_button.configure(state="disabled")
+            self.status.set("Cancelando / Cancelling... Los archivos guardados se conservan.")
 
     def poll(self):
         try:
             while True:
                 kind, value = self.events.get_nowait()
-                if kind == "loaded":
-                    self.progress.stop()
-                    self.progress.configure(mode="determinate", value=0)
-                elif kind == "status":
-                    self.status.set(value)
+                if kind == "status":
+                    if not self.cancelled.is_set():
+                        self.status.set(value)
                 elif kind == "progress":
-                    self.progress["value"] = value
+                    self.progress.stop()
+                    self.progress.configure(mode="determinate", value=value)
                 elif kind == "done":
                     self.progress.stop()
                     self.progress.configure(mode="determinate")
                     self.busy = False
+                    self.cancel_button.configure(state="disabled")
                     for widget in self.controls:
                         widget.configure(state="readonly" if isinstance(widget, ttk.Combobox) else "normal")
                     self.listbox.configure(state="normal")
-                    completed, errors, formats = value
+                    completed, errors, formats, cancelled = value
                     format_label = " + ".join("Word" if fmt == "docx" else "Markdown" for fmt in formats)
                     self.status.set(f"Completados / Completed: {completed}. Errores / Errors: {len(errors)}.")
-                    if errors:
+                    if self.closing:
+                        self.destroy()
+                        return
+                    if cancelled:
+                        self.status.set(f"Cancelado / Cancelled. Guardados / Saved: {completed}.")
+                        if errors:
+                            messagebox.showerror("Errores / Errors", "\n\n".join(errors))
+                    elif errors:
                         messagebox.showerror("Resultado / Result", "\n\n".join(errors))
                     else:
                         self.progress["value"] = 100
@@ -227,10 +269,18 @@ class App(tk.Tk):
 
     def close(self):
         if self.busy:
-            messagebox.showinfo("Transcripción / Transcription", "Espera a que termine la transcripción antes de cerrar.")
+            if messagebox.askyesno("Salir / Quit", "¿Cancelar y cerrar? / Cancel transcription and close?"):
+                self.closing = True
+                self.cancel()
             return
         self.destroy()
 
 
 if __name__ == "__main__":
-    App().mainloop()
+    if "--self-test" in sys.argv:
+        from self_test import run
+        job_path = (Path(sys.argv[sys.argv.index("--integration-job") + 1])
+                    if "--integration-job" in sys.argv else None)
+        run(Path(sys.argv[sys.argv.index("--self-test") + 1]), job_path)
+    else:
+        App().mainloop()

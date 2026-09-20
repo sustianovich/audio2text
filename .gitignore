@@ -24,3 +24,9 @@ secrets.*
 .secrets/
 .aws/
 .ssh/
+
+# Generated executable, installer, and verification artifacts
+build/
+dist/
+release/
+.verification/

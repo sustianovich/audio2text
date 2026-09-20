@@ -1,11 +1,11 @@
 """Local media transcription and paired document export."""
 from dataclasses import dataclass
 from pathlib import Path
+from paths import ROOT, MODEL_DIR
 import os
 import tempfile
 
 SUPPORTED = {".m4v", ".m4a", ".mp4", ".mp3", ".wav", ".flac", ".ogg", ".aac", ".webm", ".mov", ".wma"}
-ROOT = Path(__file__).resolve().parent
 
 
 @dataclass
@@ -13,6 +13,8 @@ class Segment:
     start: float
     end: float
     text: str
+    speaker: str | None = None
+    words: list | None = None
 
 
 def discover(folder):
@@ -57,6 +59,8 @@ def export(source, output, segments, language, timestamps=False, formats=("md", 
         text = segment.text.strip()
         if not text:
             continue
+        if segment.speaker:
+            text = f"{segment.speaker}: {text}"
         if timestamps:
             text = f"[{timestamp(segment.start)} – {timestamp(segment.end)}] {text}"
         lines.extend([text, ""])
@@ -92,16 +96,19 @@ def export(source, output, segments, language, timestamps=False, formats=("md", 
 def load_model(name):
     from faster_whisper import WhisperModel
     return WhisperModel(name, device="cpu", compute_type="int8",
-                        download_root=str(ROOT / ".models"))
+                        download_root=str(MODEL_DIR))
 
 
-def transcribe(model, source, language, on_progress=lambda value: None):
-    segments, info = model.transcribe(str(source), language=language, task="transcribe",
-                                     beam_size=5, vad_filter=True)
+def transcribe(model, source, language, on_progress=lambda value: None, word_timestamps=False):
+    segments, info = model.transcribe(str(source) if isinstance(source, (str, Path)) else source,
+                                     language=language, task="transcribe", beam_size=5,
+                                     vad_filter=True, word_timestamps=word_timestamps)
     result = []
     for segment in segments:
         if segment.text.strip():
-            result.append(Segment(segment.start, segment.end, segment.text.strip()))
+            words = ([(word.start, word.end, word.word) for word in segment.words]
+                     if word_timestamps and segment.words else None)
+            result.append(Segment(segment.start, segment.end, segment.text.strip(), words=words))
         on_progress(min(100, segment.end / max(info.duration, 1) * 100))
     if not result:
         raise ValueError("No se ha detectado voz / No speech detected.")
