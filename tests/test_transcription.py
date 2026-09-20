@@ -32,7 +32,12 @@ class TranscriptionTests(unittest.TestCase):
             with self.subTest(formats=formats), tempfile.TemporaryDirectory() as folder:
                 paths = export("audio.m4a", folder, [Segment(0, 1, "Hello")], "en", formats=formats)
                 self.assertEqual({p.suffix for p in paths}, {"." + fmt for fmt in formats})
-                self.assertEqual(set(Path(folder).iterdir()), set(paths))
+                # Windows temporary folders may use an 8.3 alias (RUNNER~1),
+                # while export returns resolved, long-form paths.
+                self.assertEqual(
+                    {path.resolve() for path in Path(folder).iterdir()},
+                    {path.resolve() for path in paths},
+                )
                 for path in paths:
                     text = (
                         path.read_text(encoding="utf-8")
