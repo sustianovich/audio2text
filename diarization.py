@@ -1,5 +1,9 @@
 """Local speaker turns and word-level alignment using sherpa-onnx."""
+
 from pathlib import Path
+import hashlib
+import time
+from bisect import bisect_left, bisect_right
 import shutil
 import tarfile
 import urllib.request
@@ -9,32 +13,72 @@ from paths import MODEL_DIR
 from transcription import Segment
 
 RELEASES = "https://github.com/k2-fsa/sherpa-onnx/releases/download"
-SEGMENTATION_URL = RELEASES + "/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
-EMBEDDING_URL = RELEASES + "/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"
+SEGMENTATION_URL = (
+    RELEASES + "/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
+)
+# Upstream release tag really is spelled "recongition"; do not correct it.
+EMBEDDING_URL = (
+    RELEASES + "/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"
+)
 
 
-def download(url, destination, status):
-    """Publish a complete download only; interrupted files are never loaded."""
+# Pinned SHA-256 of the release assets and extracted segmentation model.
+HASHES = {
+    SEGMENTATION_URL: "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488",
+    EMBEDDING_URL: "357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b",
+}
+SEGMENTATION_HASH = "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079"
+
+
+def checksum(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def download(url, destination, status, expected_hash=None):
+    """Validate cached assets and publish only verified complete downloads."""
+    expected_hash = expected_hash or HASHES[url]
     destination = Path(destination)
-    if destination.is_file():
+    if destination.is_file() and checksum(destination) == expected_hash:
         return destination
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(destination.name + "." + uuid.uuid4().hex + ".part")
     try:
-        status("Descargando modelo de voces / Downloading speaker model…")
-        with urllib.request.urlopen(url, timeout=60) as response, temporary.open("wb") as output:
-            shutil.copyfileobj(response, output)
-        temporary.replace(destination)
+        for attempt in range(3):
+            try:
+                with (
+                    urllib.request.urlopen(url, timeout=60) as response,
+                    temporary.open("wb") as output,
+                ):
+                    total = int(response.headers.get("Content-Length", 0))
+                    received = 0
+                    while chunk := response.read(1024 * 1024):
+                        output.write(chunk)
+                        received += len(chunk)
+                        detail = f"{received / total:.0%}" if total else f"{received // 1024} KiB"
+                        status(f"Descargando modelo de voces / Downloading speaker model: {detail}")
+                if checksum(temporary) != expected_hash:
+                    raise ValueError("Speaker model SHA-256 mismatch")
+                temporary.replace(destination)
+                return destination
+            except (OSError, ValueError):
+                if attempt == 2:
+                    raise
+                status(f"Reintentando descarga / Retrying download ({attempt + 2}/3)...")
+                time.sleep(2**attempt)
     finally:
         temporary.unlink(missing_ok=True)
-    return destination
 
 
 def load_diarizer(num_speakers=0, status=lambda value: None):
     import sherpa_onnx
+
     cache = MODEL_DIR / "speakers"
     model = cache / "segmentation.onnx"
-    if not model.is_file():
+    if not model.is_file() or checksum(model) != SEGMENTATION_HASH:
         archive = download(SEGMENTATION_URL, cache / "segmentation.tar.bz2", status)
         temporary = model.with_name(model.name + "." + uuid.uuid4().hex + ".part")
         try:
@@ -45,6 +89,8 @@ def load_diarizer(num_speakers=0, status=lambda value: None):
                     raise ValueError("Invalid speaker model archive")
                 with bundle.extractfile(member) as source, temporary.open("wb") as target:
                     shutil.copyfileobj(source, target)
+            if checksum(temporary) != SEGMENTATION_HASH:
+                raise ValueError("Segmentation model SHA-256 mismatch")
             temporary.replace(model)
         finally:
             temporary.unlink(missing_ok=True)
@@ -71,6 +117,10 @@ def label_segments(segments, turns):
     for _, _, speaker in turns:
         if speaker not in labels:
             labels[speaker] = f"Speaker {len(labels) + 1}"
+    starts = [turn[0] for turn in turns]
+    prefix_ends = []
+    for _, end, _ in turns:
+        prefix_ends.append(max(end, prefix_ends[-1] if prefix_ends else end))
     result = []
     for segment in segments:
         pieces = segment.words or [(segment.start, segment.end, segment.text)]
@@ -79,9 +129,9 @@ def label_segments(segments, turns):
             if not text.strip():
                 continue
             scores = {}
-            for turn_start, turn_end, speaker in turns:
-                if turn_start >= end:
-                    break
+            first = bisect_right(prefix_ends, start)
+            last = bisect_left(starts, end)
+            for turn_start, turn_end, speaker in turns[first:last]:
                 overlap = max(0, min(end, turn_end) - max(start, turn_start))
                 if overlap:
                     scores[speaker] = scores.get(speaker, 0) + overlap
@@ -99,6 +149,7 @@ def diarize(diarizer, audio, segments, progress=lambda value: None):
     def callback(done, total):
         progress(done / max(total, 1) * 100)
         return 0
+
     turns = diarizer.process(audio, callback=callback).sort_by_start_time()
     if not turns:
         raise ValueError("No se detectaron voces / No speaker turns detected")
