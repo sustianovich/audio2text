@@ -12,7 +12,9 @@ Installed-app recordings and transcripts default to `%LOCALAPPDATA%\Audio2Text\w
 
 ## Run from source
 
-Install Python 3.10+ with Tkinter, then double-click **start.bat**. The launcher creates a virtual environment and installs dependencies.
+Install Python 3.10+ with Tkinter, then double-click **start.bat**. On first use, the launcher asks before creating a virtual environment and installing dependencies. Later launches use the installed dependencies without checking online or running pip.
+
+To update dependencies, double-click **update.bat** (or run `start.bat --update`) and confirm with **Y**. Updates stay within the versions allowed by the project requirements. Choose **N** to leave the installed dependencies unchanged.
 
 Alternatively, in PowerShell:
 
